@@ -1,0 +1,136 @@
+#include "xc.h"
+#include <p24fxxxx.h>
+#include <stdio.h>
+#include <string.h>
+
+#pragma config FNOSC = FRCPLL
+
+#define SYS_FREQ 32000000UL
+#define PERIPHERAL_FREQ (SYS_FREQ/2)
+#define INSTRUCTION_FREQ (SYS_FREQ/2)
+#define BAUDRATE 9600
+#define MODE 16
+#define BRGVAL ((PERIPHERAL_FREQ/BAUDRATE)/MODE)-1
+#define ADC_NSTEPS 1024
+
+void ClockWiseRotation() 
+{
+    _RE0 = 0;
+    _RE7 = 1;
+}
+
+void CounterClockWiseRotation() 
+{
+    _RE0 = 1;
+    _RE7 = 0;
+}
+
+void ConfigUART1Interrupts();
+void SendDataBuffer(const char *buffer, uint32_t size);
+void ADCinit(void);
+void UpdateFanStatus(float Temperature);
+int16_t ADCread(void);
+char Rxdata[1024];
+
+
+void __attribute__((__interrupt__, no_auto_psv)) _U1TXInterrupt(void) {
+IFS0bits.U1TXIF = 0;
+}
+void __attribute__((__interrupt__,no_auto_psv)) _U1RXInterrupt(void) {
+IFS0bits.U1RXIF = 0;
+}
+
+int main(void) {
+
+    float ADCreading;
+    int16_t ADCcode;
+    float Temperature;
+    
+    TRISB = 0x80;
+    CNPU1 = 0x0000;
+    PORTE = 0x0000;
+    TRISE = 0x0000;
+
+    U1MODEbits.UARTEN = 0;
+    ConfigUART1Interrupts();
+    ADCinit();
+    IEC0bits.U1TXIE = 1;
+    U1MODEbits.UARTEN = 1; 
+    U1STAbits.UTXEN = 1;
+    T2CON = 0x8030;
+    PR2 = 31249;
+
+    while(1) {
+        ADCcode = ADCread();
+        ADCreading = (5.0/ADC_NSTEPS)* ADCcode;
+        Temperature = ADCreading*100+200;
+        UpdateFanStatus(Temperature);
+        sprintf(Rxdata, "\r\nCurrent temperature is: %3.1f C\r\n", (double) Temperature);
+        SendDataBuffer(Rxdata, strlen(Rxdata));
+        
+        
+        LATD = ADCcode >> 3;
+        
+        while(TMR2);
+    }
+    U1MODEbits.UARTEN = 0;
+    return 0;
+}
+
+void ConfigUART1Interrupts()
+{
+    U1MODEbits.UARTEN=0;
+    U1BRG = BRGVAL;
+    U1STAbits.UTXISEL0 = 0;
+    U1STAbits.UTXISEL1 = 0;
+    U1STAbits.URXISEL0 = 0;
+    U1STAbits.URXISEL1 = 0;
+    U1MODEbits.UARTEN = 1;
+}
+
+void SendDataBuffer(const char *buffer,uint32_t size)
+{
+    while(size) {
+        while(!U1STAbits.TRMT);
+        U1TXREG= *buffer;
+        buffer++;
+        size--;
+    }
+
+    while(!U1STAbits.TRMT);
+}
+
+void ADCinit() {
+    AD1CON2 = 0; 
+    AD1CHS = 0x0007;
+    AD1PCFG = 0x0007; 
+    AD1CSSL = 0;
+    AD1CON3 = 0x1F19;
+    AD1CON1 = 0x01E0;
+    AD1CON1bits.ADON = 1;
+    IFS0bits.AD1IF = 0;
+}
+
+int16_t ADCread()
+{
+    AD1CON1bits.SAMP = 1; 
+    while (!AD1CON1bits.DONE);
+    return ADC1BUF0;
+}
+
+void UpdateFanStatus(float Temperature) {
+    
+    if (Temperature < 30) { 
+        ClockWiseRotation();
+        
+        sprintf(Rxdata, "Clockwise Rotation\r\n\r\n");
+        SendDataBuffer(Rxdata, strlen(Rxdata));
+    }
+    else {
+        CounterClockWiseRotation();
+        
+        sprintf(Rxdata, "Counter Clockwise Rotation\r\n\r\n");
+        SendDataBuffer(Rxdata, strlen(Rxdata));
+    }
+    return 0;
+}
